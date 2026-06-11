@@ -171,6 +171,9 @@ namespace config {
 
     int fec_percentage;
 
+    // Adjust the FEC percentage at runtime based on client loss reports
+    bool adaptive_fec;
+
     // Video encryption settings for LAN and WAN streams
     int lan_encryption_mode;
     int wan_encryption_mode;

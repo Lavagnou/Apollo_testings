@@ -383,9 +383,16 @@ namespace stream {
       // Written by the control thread, readable from any thread.
       std::atomic<int> loss_rate_x10000 {0};
 
+      // Current FEC percentage, written by the adaptive FEC controller on the
+      // control thread and read by videoBroadcastThread for every frame.
+      std::atomic<int> dyn_fec_percentage {20};
+
       // Accessed only from the control thread (IDX_LOSS_STATS handler)
       std::uint32_t last_packets_sent_sample {0};
       std::chrono::steady_clock::time_point last_loss_report {};
+      std::chrono::steady_clock::time_point last_loss_seen {};
+      std::chrono::steady_clock::time_point last_fec_change {};
+      int lossy_report_streak {0};
 
       std::unique_ptr<platf::deinit_t> qos;
     } video;
@@ -979,6 +986,44 @@ namespace stream {
         session->video.loss_rate_x10000.store(prev + (sample - prev) / 4, std::memory_order_relaxed);
 
         loss_rate_logger.collect_and_log(sample / 100.);
+
+        if (count > 0) {
+          session->video.last_loss_seen = now;
+        }
+
+        if (config::stream.adaptive_fec) {
+          // Step the FEC percentage up quickly on loss and back down slowly on
+          // clean intervals. On loss-free links this returns the FEC overhead
+          // to the video bitrate; on lossy ones it absorbs drops before the
+          // client has to request recovery.
+          constexpr auto lossy_sample_threshold = 50;  // 0.5% loss over one report interval
+          const auto fec_floor = std::min(config::stream.fec_percentage, 10);
+          const auto fec_ceiling = std::max(config::stream.fec_percentage, 55);
+
+          auto fec = session->video.dyn_fec_percentage.load(std::memory_order_relaxed);
+
+          if (sample >= lossy_sample_threshold) {
+            // Two consecutive lossy reports avoid reacting to a single spurious one
+            if (++session->video.lossy_report_streak >= 2 &&
+                fec < fec_ceiling &&
+                now - session->video.last_fec_change >= 1s) {
+              fec = std::min(fec + 10, fec_ceiling);
+              session->video.dyn_fec_percentage.store(fec, std::memory_order_relaxed);
+              session->video.last_fec_change = now;
+              BOOST_LOG(info) << "Adaptive FEC: loss detected, raising FEC to "sv << fec << '%';
+            }
+          } else {
+            session->video.lossy_report_streak = 0;
+            if (fec > fec_floor &&
+                now - session->video.last_loss_seen >= 10s &&
+                now - session->video.last_fec_change >= 10s) {
+              fec = std::max(fec - 5, fec_floor);
+              session->video.dyn_fec_percentage.store(fec, std::memory_order_relaxed);
+              session->video.last_fec_change = now;
+              BOOST_LOG(info) << "Adaptive FEC: network clean, lowering FEC to "sv << fec << '%';
+            }
+          }
+        }
       }
 
       BOOST_LOG(verbose)
@@ -1432,7 +1477,9 @@ namespace stream {
         frame_header.frame_processing_latency = 0;
       }
 
-      auto fecPercentage = config::stream.fec_percentage;
+      auto fecPercentage = config::stream.adaptive_fec ?
+                             std::clamp(session->video.dyn_fec_percentage.load(std::memory_order_relaxed), 1, 255) :
+                             config::stream.fec_percentage;
 
       // Insert space for packet headers
       auto blocksize = session->config.packetsize + MAX_RTP_HEADER_SIZE;
@@ -2209,6 +2256,9 @@ namespace stream {
       session->video.invalidate_ref_frames_events = mail->event<std::pair<int64_t, int64_t>>(mail::invalidate_ref_frames);
       session->video.lowseq = 0;
       session->video.ping_payload = launch_session.av_ping_payload;
+      session->video.dyn_fec_percentage = config::stream.fec_percentage;
+      session->video.last_loss_seen = std::chrono::steady_clock::now();
+      session->video.last_fec_change = session->video.last_loss_seen;
       if (config.encryptionFlagsEnabled & SS_ENC_VIDEO) {
         BOOST_LOG(info) << "Video encryption enabled"sv;
         session->video.cipher = crypto::cipher::gcm_t {
