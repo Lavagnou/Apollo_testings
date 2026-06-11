@@ -1841,22 +1841,47 @@ namespace stream {
         if ((sequenceNumber + 1) % RTPA_DATA_SHARDS == 0) {
           reed_solomon_encode(rs.get(), shards_p.begin(), RTPA_TOTAL_SHARDS, bytes);
 
+          // Send all FEC shards in a single batch when the platform supports it
+          std::array<audio_fec_packet_t, RTPA_FEC_SHARDS> fec_headers;
+          std::vector<platf::buffer_descriptor_t> fec_payloads;
+          fec_payloads.reserve(RTPA_FEC_SHARDS);
           for (auto x = 0; x < RTPA_FEC_SHARDS; ++x) {
-            fec_packet.rtp.sequenceNumber = util::endian::big<std::uint16_t>(sequenceNumber + x + 1);
-            fec_packet.fecHeader.fecShardIndex = x;
+            fec_headers[x] = fec_packet;
+            fec_headers[x].rtp.sequenceNumber = util::endian::big<std::uint16_t>(sequenceNumber + x + 1);
+            fec_headers[x].fecHeader.fecShardIndex = x;
+            fec_payloads.emplace_back((const char *) shards_p[RTPA_DATA_SHARDS + x], (size_t) bytes);
+          }
 
-            auto send_info = platf::send_info_t {
-              (const char *) &fec_packet,
-              sizeof(fec_packet),
-              (const char *) shards_p[RTPA_DATA_SHARDS + x],
-              (size_t) bytes,
-              (uintptr_t) sock.native_handle(),
-              peer_address,
-              session->audio.peer.port(),
-              session->localAddress,
-            };
-            platf::send(send_info);
-            BOOST_LOG(verbose) << "Audio FEC ["sv << (sequenceNumber & ~(RTPA_DATA_SHARDS - 1)) << ' ' << x << "] ::  send..."sv;
+          auto batch_info = platf::batched_send_info_t {
+            (const char *) fec_headers.data(),
+            sizeof(audio_fec_packet_t),
+            fec_payloads,
+            (size_t) bytes,
+            0,
+            RTPA_FEC_SHARDS,
+            (uintptr_t) sock.native_handle(),
+            peer_address,
+            session->audio.peer.port(),
+            session->localAddress,
+          };
+
+          if (platf::send_batch(batch_info)) {
+            BOOST_LOG(verbose) << "Audio FEC ["sv << (sequenceNumber & ~(RTPA_DATA_SHARDS - 1)) << "] ::  batch send..."sv;
+          } else {
+            for (auto x = 0; x < RTPA_FEC_SHARDS; ++x) {
+              auto send_info = platf::send_info_t {
+                (const char *) &fec_headers[x],
+                sizeof(audio_fec_packet_t),
+                (const char *) shards_p[RTPA_DATA_SHARDS + x],
+                (size_t) bytes,
+                (uintptr_t) sock.native_handle(),
+                peer_address,
+                session->audio.peer.port(),
+                session->localAddress,
+              };
+              platf::send(send_info);
+              BOOST_LOG(verbose) << "Audio FEC ["sv << (sequenceNumber & ~(RTPA_DATA_SHARDS - 1)) << ' ' << x << "] ::  send..."sv;
+            }
           }
         }
       } catch (const std::exception &e) {
@@ -1908,6 +1933,14 @@ namespace stream {
       BOOST_LOG(fatal) << "Couldn't open socket for Audio server: "sv << ec.message();
 
       return -1;
+    }
+
+    // Audio packets are small but sent at a high rate; a larger send buffer
+    // prevents drops when the audio thread gets briefly delayed.
+    try {
+      ctx.audio_sock.set_option(boost::asio::socket_base::send_buffer_size(256 * 1024));
+    } catch (...) {
+      BOOST_LOG(error) << "Failed to set audio socket send buffer size (SO_SENDBUF)";
     }
 
     ctx.audio_sock.bind(udp::endpoint(protocol, audio_port), ec);
