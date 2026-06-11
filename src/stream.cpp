@@ -1408,6 +1408,11 @@ namespace stream {
     auto packets = mail::man->queue<video::packet_t>(mail::video_packets);
     auto video_epoch = std::chrono::steady_clock::now();
 
+    // If the encoder outpaces the network, keep the freshest frames instead of
+    // dumping the entire queue, which freezes the stream for several hundred ms.
+    packets->set_overflow_policy(safe::queue_t<video::packet_t>::overflow_policy_e::drop_oldest);
+    std::uint64_t dropped_packets_seen = 0;
+
     // Video traffic is sent on this thread
     platf::adjust_thread_priority(platf::thread_priority_e::high);
 
@@ -1436,6 +1441,17 @@ namespace stream {
 
       auto session = (session_t *) packet->channel_data;
       auto lowseq = session->video.lowseq;
+
+      // Frames discarded on queue overflow leave a gap in the frame sequence.
+      // Request an IDR right away so the client recovers without having to
+      // detect the gap and ask for reference frame invalidation itself.
+      auto dropped_packets = packets->dropped();
+      if (dropped_packets != dropped_packets_seen) {
+        BOOST_LOG(warning) << "Video packet queue overflowed, dropped "sv << (dropped_packets - dropped_packets_seen)
+                           << " encoded frames; requesting IDR"sv;
+        dropped_packets_seen = dropped_packets;
+        session->video.idr_events->raise(true);
+      }
 
       std::string_view payload {(char *) packet->data(), packet->data_size()};
       std::vector<uint8_t> payload_with_replacements;
