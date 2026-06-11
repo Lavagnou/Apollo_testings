@@ -28,6 +28,13 @@ const config = ref(props.config)
               default="true"
     ></Checkbox>
 
+    <!-- Pacing multiplier -->
+    <div class="mb-3">
+      <label for="pacing_multiplier" class="form-label">{{ $t('config.pacing_multiplier') }}</label>
+      <input type="number" class="form-control" id="pacing_multiplier" placeholder="4" min="0" max="100" v-model="config.pacing_multiplier" />
+      <div class="form-text">{{ $t('config.pacing_multiplier_desc') }}</div>
+    </div>
+
     <!-- Quantization Parameter -->
     <div class="mb-3">
       <label for="qp" class="form-label">{{ $t('config.qp') }}</label>

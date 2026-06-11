@@ -391,6 +391,8 @@
     "output_name_desc_windows": "Manually specify a display device id to use for capture. If unset, the primary display is captured. Note: If you specified a GPU above, this display must be connected to that GPU. During Apollo startup, you should see the list of detected displays. Below is an example; the actual output can be found in the Troubleshooting tab.",
     "output_name_unix": "Display number",
     "output_name_windows": "Display Device Id",
+    "pacing_multiplier": "Pacing multiplier",
+    "pacing_multiplier_desc": "Spread each video frame's packets over time, sending at this multiple of the stream bitrate instead of bursting the whole frame at near line rate. Lower values smooth out bursts (helpful for Wi-Fi clients and shallow network buffers) at the cost of a few milliseconds of added send time. 0 disables pacing and restores legacy burst behavior.",
     "ping_timeout": "Ping Timeout",
     "ping_timeout_desc": "How long to wait in milliseconds for data from moonlight before shutting down the stream",
     "pkey": "Private Key",

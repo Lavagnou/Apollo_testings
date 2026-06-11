@@ -174,6 +174,10 @@ namespace config {
     // Adjust the FEC percentage at runtime based on client loss reports
     bool adaptive_fec;
 
+    // Pace video sends at this multiple of the stream bitrate instead of
+    // bursting each frame at near line rate. 0 disables bitrate-based pacing.
+    int pacing_multiplier;
+
     // Video encryption settings for LAN and WAN streams
     int lan_encryption_mode;
     int wan_encryption_mode;

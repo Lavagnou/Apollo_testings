@@ -1544,6 +1544,24 @@ namespace stream {
         // Use around 80% of 1Gbps          1Gbps            percent    ms     packet      byte
         size_t ratecontrol_packets_in_1ms = std::giga::num * 80 / 100 / 1000 / blocksize / 8;
 
+        if (config::stream.pacing_multiplier > 0 && session->config.monitor.bitrate > 0) {
+          // Pace at a multiple of the stream bitrate so each frame is spread over
+          // a fraction of the frame interval instead of bursting at near line
+          // rate, which overflows shallow buffers in Wi-Fi APs and switches.
+          auto pace_bps = (std::int64_t) session->config.monitor.bitrate * 1000 * config::stream.pacing_multiplier;
+          auto bitrate_packets_in_1ms = (size_t) (pace_bps / 8 / 1000 / blocksize);
+
+          // Even when the encoder overshoots its bitrate budget, the frame must
+          // finish sending within ~40% of the frame interval so pacing never
+          // delays the next frame.
+          auto frame_packets = (payload.size() + blocksize - 1) / blocksize;
+          frame_packets += frame_packets * fecPercentage / 100;
+          size_t min_packets_in_1ms = frame_packets * std::max(session->config.monitor.framerate, 1) / 400 + 1;
+
+          // The legacy 800 Mbps rate remains the upper bound
+          ratecontrol_packets_in_1ms = std::min(std::max(bitrate_packets_in_1ms, min_packets_in_1ms), ratecontrol_packets_in_1ms);
+        }
+
         // Send less than 64K in a single batch.
         // On Windows, batches above 64K seem to bypass SO_SNDBUF regardless of its size,
         // appear in "Other I/O" and begin waiting for interrupts.
