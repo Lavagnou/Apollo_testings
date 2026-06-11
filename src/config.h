@@ -174,6 +174,10 @@ namespace config {
     // Adjust the FEC percentage at runtime based on client loss reports
     bool adaptive_fec;
 
+    // Lower the encoder bitrate under sustained loss and restore it when the
+    // network recovers. Requires encoder support (NVENC).
+    bool adaptive_bitrate;
+
     // Pace video sends at this multiple of the stream bitrate instead of
     // bursting each frame at near line rate. 0 disables bitrate-based pacing.
     int pacing_multiplier;

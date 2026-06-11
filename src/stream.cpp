@@ -4,6 +4,8 @@
  */
 
 // standard includes
+#include <array>
+#include <atomic>
 #include <fstream>
 #include <future>
 #include <queue>
@@ -387,12 +389,18 @@ namespace stream {
       // control thread and read by videoBroadcastThread for every frame.
       std::atomic<int> dyn_fec_percentage {20};
 
+      // Raised by the adaptive bitrate controller, consumed by the encoder thread
+      safe::mail_raw_t::event_t<int> bitrate_events;
+
       // Accessed only from the control thread (IDX_LOSS_STATS handler)
       std::uint32_t last_packets_sent_sample {0};
       std::chrono::steady_clock::time_point last_loss_report {};
       std::chrono::steady_clock::time_point last_loss_seen {};
       std::chrono::steady_clock::time_point last_fec_change {};
+      std::chrono::steady_clock::time_point last_bitrate_change {};
       int lossy_report_streak {0};
+      int negotiated_bitrate_kbps {0};
+      int current_bitrate_kbps {0};
 
       std::unique_ptr<platf::deinit_t> qos;
     } video;
@@ -991,20 +999,26 @@ namespace stream {
           session->video.last_loss_seen = now;
         }
 
+        constexpr auto lossy_sample_threshold = 50;  // 0.5% loss over one report interval
+        const auto fec_floor = std::min(config::stream.fec_percentage, 10);
+        const auto fec_ceiling = std::max(config::stream.fec_percentage, 55);
+
+        if (sample >= lossy_sample_threshold) {
+          ++session->video.lossy_report_streak;
+        } else {
+          session->video.lossy_report_streak = 0;
+        }
+
         if (config::stream.adaptive_fec) {
           // Step the FEC percentage up quickly on loss and back down slowly on
           // clean intervals. On loss-free links this returns the FEC overhead
           // to the video bitrate; on lossy ones it absorbs drops before the
           // client has to request recovery.
-          constexpr auto lossy_sample_threshold = 50;  // 0.5% loss over one report interval
-          const auto fec_floor = std::min(config::stream.fec_percentage, 10);
-          const auto fec_ceiling = std::max(config::stream.fec_percentage, 55);
-
           auto fec = session->video.dyn_fec_percentage.load(std::memory_order_relaxed);
 
           if (sample >= lossy_sample_threshold) {
             // Two consecutive lossy reports avoid reacting to a single spurious one
-            if (++session->video.lossy_report_streak >= 2 &&
+            if (session->video.lossy_report_streak >= 2 &&
                 fec < fec_ceiling &&
                 now - session->video.last_fec_change >= 1s) {
               fec = std::min(fec + 10, fec_ceiling);
@@ -1012,16 +1026,49 @@ namespace stream {
               session->video.last_fec_change = now;
               BOOST_LOG(info) << "Adaptive FEC: loss detected, raising FEC to "sv << fec << '%';
             }
-          } else {
-            session->video.lossy_report_streak = 0;
-            if (fec > fec_floor &&
-                now - session->video.last_loss_seen >= 10s &&
-                now - session->video.last_fec_change >= 10s) {
-              fec = std::max(fec - 5, fec_floor);
-              session->video.dyn_fec_percentage.store(fec, std::memory_order_relaxed);
-              session->video.last_fec_change = now;
-              BOOST_LOG(info) << "Adaptive FEC: network clean, lowering FEC to "sv << fec << '%';
+          } else if (fec > fec_floor &&
+                     now - session->video.last_loss_seen >= 10s &&
+                     now - session->video.last_fec_change >= 10s) {
+            fec = std::max(fec - 5, fec_floor);
+            session->video.dyn_fec_percentage.store(fec, std::memory_order_relaxed);
+            session->video.last_fec_change = now;
+            BOOST_LOG(info) << "Adaptive FEC: network clean, lowering FEC to "sv << fec << '%';
+          }
+        }
+
+        if (config::stream.adaptive_bitrate &&
+            session->video.negotiated_bitrate_kbps > 0 &&
+            session->video.bitrate_events) {
+          // Cut the encoder bitrate when raising FEC alone isn't enough: the
+          // channel capacity has likely dropped below the encoded bitrate, and
+          // no amount of error correction can outrun a saturated link.
+          auto current = session->video.current_bitrate_kbps;
+          const auto negotiated = session->video.negotiated_bitrate_kbps;
+          const auto bitrate_floor = std::max(negotiated / 4, 500);
+
+          // With adaptive FEC enabled, only cut bitrate once FEC is exhausted
+          const bool fec_exhausted = !config::stream.adaptive_fec ||
+                                     session->video.dyn_fec_percentage.load(std::memory_order_relaxed) >= fec_ceiling;
+
+          if (sample >= lossy_sample_threshold) {
+            if (session->video.lossy_report_streak >= 2 &&
+                fec_exhausted &&
+                current > bitrate_floor &&
+                now - session->video.last_bitrate_change >= 2s) {
+              current = std::max(current * 8 / 10, bitrate_floor);
+              session->video.current_bitrate_kbps = current;
+              session->video.last_bitrate_change = now;
+              session->video.bitrate_events->raise(current);
+              BOOST_LOG(info) << "Adaptive bitrate: sustained loss, lowering bitrate to "sv << current << " kbps"sv;
             }
+          } else if (current < negotiated &&
+                     now - session->video.last_loss_seen >= 15s &&
+                     now - session->video.last_bitrate_change >= 15s) {
+            current = std::min(current + std::max(negotiated / 10, 1), negotiated);
+            session->video.current_bitrate_kbps = current;
+            session->video.last_bitrate_change = now;
+            session->video.bitrate_events->raise(current);
+            BOOST_LOG(info) << "Adaptive bitrate: network clean, restoring bitrate to "sv << current << " kbps"sv;
           }
         }
       }
@@ -2326,6 +2373,10 @@ namespace stream {
       session->video.dyn_fec_percentage = config::stream.fec_percentage;
       session->video.last_loss_seen = std::chrono::steady_clock::now();
       session->video.last_fec_change = session->video.last_loss_seen;
+      session->video.last_bitrate_change = session->video.last_loss_seen;
+      session->video.bitrate_events = mail->event<int>(mail::bitrate_change);
+      session->video.negotiated_bitrate_kbps = config.monitor.bitrate;
+      session->video.current_bitrate_kbps = config.monitor.bitrate;
       if (config.encryptionFlagsEnabled & SS_ENC_VIDEO) {
         BOOST_LOG(info) << "Video encryption enabled"sv;
         session->video.cipher = crypto::cipher::gcm_t {

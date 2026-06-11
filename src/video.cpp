@@ -420,6 +420,14 @@ namespace video {
       }
     }
 
+    bool update_bitrate(int bitrate_kbps) override {
+      if (!device || !device->nvenc || bitrate_kbps <= 0) {
+        return false;
+      }
+
+      return device->nvenc->reconfigure_rate_control(bitrate_kbps);
+    }
+
     nvenc::nvenc_encoded_frame encode_frame(uint64_t frame_index) {
       if (!device || !device->nvenc) {
         return {};
@@ -440,6 +448,7 @@ namespace video {
     safe::mail_raw_t::event_t<bool> shutdown_event;
     safe::mail_raw_t::queue_t<packet_t> packets;
     safe::mail_raw_t::event_t<bool> idr_events;
+    safe::mail_raw_t::event_t<int> bitrate_events;
     safe::mail_raw_t::event_t<hdr_info_t> hdr_events;
     safe::mail_raw_t::event_t<input::touch_port_t> touch_port_events;
 
@@ -1953,6 +1962,7 @@ namespace video {
     auto packets = mail::man->queue<packet_t>(mail::video_packets);
     auto idr_events = mail->event<bool>(mail::idr);
     auto invalidate_ref_frames_events = mail->event<std::pair<int64_t, int64_t>>(mail::invalidate_ref_frames);
+    auto bitrate_events = mail->event<int>(mail::bitrate_change);
 
     {
       // Load a dummy image into the AVFrame to ensure we have something to encode
@@ -2003,6 +2013,14 @@ namespace video {
       while (invalidate_ref_frames_events->peek()) {
         if (auto frames = invalidate_ref_frames_events->pop(0ms)) {
           session->invalidate_ref_frames(frames->first, frames->second);
+        }
+      }
+
+      while (bitrate_events->peek()) {
+        if (auto bitrate_kbps = bitrate_events->pop(0ms)) {
+          if (!session->update_bitrate(*bitrate_kbps)) {
+            BOOST_LOG(debug) << "Encoder doesn't support mid-stream bitrate change"sv;
+          }
         }
       }
 
@@ -2283,6 +2301,14 @@ namespace video {
             ctx->idr_events->pop();
           }
 
+          while (ctx->bitrate_events->peek()) {
+            if (auto bitrate_kbps = ctx->bitrate_events->pop(0ms)) {
+              if (!pos->session->update_bitrate(*bitrate_kbps)) {
+                BOOST_LOG(debug) << "Encoder doesn't support mid-stream bitrate change"sv;
+              }
+            }
+          }
+
           if (frame_captured && pos->session->convert(*img)) {
             BOOST_LOG(error) << "Could not convert image"sv;
             ctx->shutdown_event->raise(true);
@@ -2465,6 +2491,7 @@ namespace video {
         mail->event<bool>(mail::shutdown),
         mail::man->queue<packet_t>(mail::video_packets),
         std::move(idr_events),
+        mail->event<int>(mail::bitrate_change),
         mail->event<hdr_info_t>(mail::hdr),
         mail->event<input::touch_port_t>(mail::touch_port),
         config,

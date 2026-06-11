@@ -28,6 +28,14 @@ const config = ref(props.config)
               default="true"
     ></Checkbox>
 
+    <!-- Adaptive bitrate -->
+    <Checkbox class="mb-3"
+              id="adaptive_bitrate"
+              locale-prefix="config"
+              v-model="config.adaptive_bitrate"
+              default="true"
+    ></Checkbox>
+
     <!-- Pacing multiplier -->
     <div class="mb-3">
       <label for="pacing_multiplier" class="form-label">{{ $t('config.pacing_multiplier') }}</label>

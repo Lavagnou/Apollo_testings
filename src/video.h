@@ -213,6 +213,15 @@ namespace video {
     virtual void request_normal_frame() = 0;
 
     virtual void invalidate_ref_frames(int64_t first_frame, int64_t last_frame) = 0;
+
+    /**
+     * @brief Change the encoder bitrate mid-stream without restarting the session.
+     * @param bitrate_kbps New target bitrate in kilobits per second.
+     * @return `true` if the encoder applied the new bitrate, `false` if unsupported.
+     */
+    virtual bool update_bitrate(int bitrate_kbps) {
+      return false;
+    }
   };
 
   // encoders

@@ -138,6 +138,8 @@
     "adapter_name_desc_linux_3": "Replace ``renderD129`` with the device from above to lists the name and capabilities of the device. To be supported by Apollo, it needs to have at the very minimum:",
     "adapter_name_desc_windows": "Manually specify a GPU to use for capture. If unset, the GPU is chosen automatically. We strongly recommend leaving this field blank to use automatic GPU selection! Note: This GPU must have a display connected and powered on. The appropriate values can be found using the following command:",
     "adapter_name_placeholder_windows": "Radeon RX 580 Series",
+    "adaptive_bitrate": "Adaptive bitrate",
+    "adaptive_bitrate_desc": "Temporarily lower the encoder bitrate when the client keeps reporting packet loss after FEC has been raised, then restore it once the network recovers. Requires an encoder with mid-stream reconfiguration support (NVENC).",
     "adaptive_fec": "Adaptive FEC",
     "adaptive_fec_desc": "Automatically adjust the FEC percentage based on packet loss reported by the client: lower on clean networks to free bandwidth for video, higher during loss episodes to absorb drops. The configured FEC percentage is used as the starting point.",
     "add": "Add",

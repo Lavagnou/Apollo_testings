@@ -139,7 +139,7 @@ namespace nvenc {
       return false;
     }
 
-    NV_ENC_INITIALIZE_PARAMS init_params = {min_struct_version(NV_ENC_INITIALIZE_PARAMS_VER)};
+    init_params = {min_struct_version(NV_ENC_INITIALIZE_PARAMS_VER)};
 
     switch (client_config.videoFormat) {
       case 0:
@@ -232,7 +232,7 @@ namespace nvenc {
       return false;
     }
 
-    NV_ENC_CONFIG enc_config = preset_config.presetCfg;
+    enc_config = preset_config.presetCfg;
     enc_config.profileGUID = NV_ENC_CODEC_PROFILE_AUTOSELECT_GUID;
     enc_config.gopLength = NVENC_INFINITE_GOPLENGTH;
     enc_config.frameIntervalP = 1;
@@ -247,7 +247,12 @@ namespace nvenc {
     enc_config.rcParams.enableAQ = config.adaptive_quantization;
     enc_config.rcParams.averageBitRate = client_config.bitrate * 1000;
 
-    if (get_encoder_cap(NV_ENC_CAPS_SUPPORT_CUSTOM_VBV_BUF_SIZE)) {
+    // Remembered for mid-stream rate control reconfiguration
+    encoder_params.framerate = std::max(client_config.framerate, 1);
+    encoder_params.custom_vbv_supported = get_encoder_cap(NV_ENC_CAPS_SUPPORT_CUSTOM_VBV_BUF_SIZE);
+    encoder_params.vbv_percentage_increase = std::max(config.vbv_percentage_increase, 0);
+
+    if (encoder_params.custom_vbv_supported) {
       enc_config.rcParams.vbvBufferSize = client_config.bitrate * 1000 / client_config.framerate;
       if (config.vbv_percentage_increase > 0) {
         enc_config.rcParams.vbvBufferSize += enc_config.rcParams.vbvBufferSize * config.vbv_percentage_increase / 100;
@@ -606,6 +611,39 @@ namespace nvenc {
       }
     }
 
+    return true;
+  }
+
+  bool nvenc_base::reconfigure_rate_control(uint32_t bitrate_kbps) {
+    if (!encoder || !nvenc || bitrate_kbps == 0) {
+      return false;
+    }
+
+    auto previous_bitrate = enc_config.rcParams.averageBitRate;
+    auto previous_vbv = enc_config.rcParams.vbvBufferSize;
+
+    enc_config.rcParams.averageBitRate = bitrate_kbps * 1000;
+    if (encoder_params.custom_vbv_supported) {
+      uint32_t vbv_buffer_size = bitrate_kbps * 1000 / encoder_params.framerate;
+      if (encoder_params.vbv_percentage_increase > 0) {
+        vbv_buffer_size += vbv_buffer_size * encoder_params.vbv_percentage_increase / 100;
+      }
+      enc_config.rcParams.vbvBufferSize = vbv_buffer_size;
+    }
+
+    NV_ENC_RECONFIGURE_PARAMS reconfigure_params = {min_struct_version(NV_ENC_RECONFIGURE_PARAMS_VER)};
+    reconfigure_params.reInitEncodeParams = init_params;
+    reconfigure_params.resetEncoder = 0;
+    reconfigure_params.forceIDR = 0;
+
+    if (nvenc_failed(nvenc->nvEncReconfigureEncoder(encoder, &reconfigure_params))) {
+      BOOST_LOG(warning) << "NvEnc: NvEncReconfigureEncoder() failed: " << last_nvenc_error_string;
+      enc_config.rcParams.averageBitRate = previous_bitrate;
+      enc_config.rcParams.vbvBufferSize = previous_vbv;
+      return false;
+    }
+
+    BOOST_LOG(info) << "NvEnc: rate control reconfigured to " << bitrate_kbps << " kbps";
     return true;
   }
 
