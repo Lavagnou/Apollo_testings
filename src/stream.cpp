@@ -375,6 +375,18 @@ namespace stream {
       safe::mail_raw_t::event_t<bool> idr_events;
       safe::mail_raw_t::event_t<std::pair<int64_t, int64_t>> invalidate_ref_frames_events;
 
+      // Total video shards sent, written by videoBroadcastThread and sampled
+      // by the loss-stats handler on the control thread to compute loss rates.
+      std::atomic<std::uint32_t> packets_sent {0};
+
+      // EWMA of the client-reported packet loss rate, in 1/100 of a percent.
+      // Written by the control thread, readable from any thread.
+      std::atomic<int> loss_rate_x10000 {0};
+
+      // Accessed only from the control thread (IDX_LOSS_STATS handler)
+      std::uint32_t last_packets_sent_sample {0};
+      std::chrono::steady_clock::time_point last_loss_report {};
+
       std::unique_ptr<platf::deinit_t> qos;
     } video;
 
@@ -928,6 +940,9 @@ namespace stream {
   }
 
   void controlBroadcastThread(control_server_t *server) {
+    // Periodic summary of the client-reported loss rate (percent per report interval)
+    logging::min_max_avg_periodic_logger<double> loss_rate_logger(info, "Client-reported packet loss rate", "%");
+
     server->map(packetTypes[IDX_PERIODIC_PING], [](session_t *session, const std::string_view &payload) {
       BOOST_LOG(verbose) << "type [IDX_PERIODIC_PING]"sv;
     });
@@ -946,6 +961,25 @@ namespace stream {
       std::chrono::milliseconds t {stats[1]};
 
       auto lastGoodFrame = stats[3];
+
+      // Update the per-session loss statistics so other parts of the stream
+      // can react to network conditions instead of streaming blindly.
+      auto now = std::chrono::steady_clock::now();
+      auto sent_total = session->video.packets_sent.load(std::memory_order_relaxed);
+      auto sent_delta = sent_total - session->video.last_packets_sent_sample;
+      session->video.last_packets_sent_sample = sent_total;
+      session->video.last_loss_report = now;
+
+      if (sent_delta > 0) {
+        // Loss rate over this report interval, in 1/100 of a percent
+        auto sample = (int) std::clamp<std::int64_t>((std::int64_t) count * 10000 / sent_delta, 0, 10000);
+
+        // EWMA with alpha = 1/4 smooths bursty reports without lagging too far behind
+        auto prev = session->video.loss_rate_x10000.load(std::memory_order_relaxed);
+        session->video.loss_rate_x10000.store(prev + (sample - prev) / 4, std::memory_order_relaxed);
+
+        loss_rate_logger.collect_and_log(sample / 100.);
+      }
 
       BOOST_LOG(verbose)
         << "type [IDX_LOSS_STATS]"sv << std::endl
@@ -1636,6 +1670,7 @@ namespace stream {
 
           ++blockIndex;
           lowseq += shards.size();
+          session->video.packets_sent.fetch_add(shards.size(), std::memory_order_relaxed);
         });
 
         session->video.lowseq = lowseq;
