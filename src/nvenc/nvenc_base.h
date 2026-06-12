@@ -69,6 +69,14 @@ namespace nvenc {
      */
     bool invalidate_ref_frames(uint64_t first_frame, uint64_t last_frame);
 
+    /**
+     * @brief Change the rate control bitrate mid-stream.
+     *        Doesn't reset the encoder and doesn't force an IDR frame.
+     * @param bitrate_kbps New target bitrate in kilobits per second.
+     * @return `true` on success, `false` on error.
+     */
+    bool reconfigure_rate_control(uint32_t bitrate_kbps);
+
   protected:
     /**
      * @brief Required. Used for loading NvEnc library and setting `nvenc` variable with `NvEncodeAPICreateInstance()`.
@@ -126,6 +134,9 @@ namespace nvenc {
       NV_ENC_BUFFER_FORMAT buffer_format = NV_ENC_BUFFER_FORMAT_UNDEFINED;
       uint32_t ref_frames_in_dpb = 0;
       bool rfi = false;
+      uint32_t framerate = 0;
+      bool custom_vbv_supported = false;
+      uint32_t vbv_percentage_increase = 0;
     } encoder_params;
 
     std::string last_nvenc_error_string;
@@ -143,6 +154,11 @@ namespace nvenc {
   private:
     NV_ENC_OUTPUT_PTR output_bitstream = nullptr;
     uint32_t minimum_api_version = 0;
+
+    // Kept alive for mid-stream reconfiguration via NvEncReconfigureEncoder().
+    // init_params.encodeConfig points at enc_config.
+    NV_ENC_INITIALIZE_PARAMS init_params = {};
+    NV_ENC_CONFIG enc_config = {};
 
     struct {
       uint64_t last_encoded_frame_index = 0;

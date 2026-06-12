@@ -254,6 +254,11 @@ namespace safe {
   public:
     using status_t = util::optional_t<T>;
 
+    enum class overflow_policy_e {
+      clear_all,  ///< Drop the entire queue when full
+      drop_oldest,  ///< Drop only the oldest element when full, keeping the freshest data
+    };
+
     queue_t(std::uint32_t max_elements = 32):
         _max_elements {max_elements} {
     }
@@ -267,12 +272,33 @@ namespace safe {
       }
 
       if (_queue.size() == _max_elements) {
-        _queue.clear();
+        if (_overflow_policy == overflow_policy_e::drop_oldest) {
+          _dropped += 1;
+          _queue.erase(std::begin(_queue));
+        } else {
+          _dropped += _queue.size();
+          _queue.clear();
+        }
       }
 
       _queue.emplace_back(std::forward<Args>(args)...);
 
       _cv.notify_all();
+    }
+
+    void set_overflow_policy(overflow_policy_e policy) {
+      std::lock_guard ul {_lock};
+
+      _overflow_policy = policy;
+    }
+
+    /**
+     * @brief Total number of elements discarded due to overflow.
+     */
+    std::uint64_t dropped() {
+      std::lock_guard ul {_lock};
+
+      return _dropped;
     }
 
     bool peek() {
@@ -339,6 +365,8 @@ namespace safe {
   private:
     bool _continue {true};
     std::uint32_t _max_elements;
+    overflow_policy_e _overflow_policy {overflow_policy_e::clear_all};
+    std::uint64_t _dropped {0};
 
     std::mutex _lock;
     std::condition_variable _cv;
