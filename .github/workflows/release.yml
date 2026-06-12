@@ -114,17 +114,17 @@ jobs:
         run: |
           version="${{ steps.version.outputs.number }}"
           mkdir -p dist
-          cp build/cpack_artifacts/Apollo.exe "dist/Apollo-${version}-Windows-installer.exe"
-          cp build/cpack_artifacts/Apollo.zip "dist/Apollo-${version}-Windows-portable.zip"
+          cp build/cpack_artifacts/LavApollo.exe "dist/LavApollo-${version}-Windows-installer.exe"
+          cp build/cpack_artifacts/LavApollo.zip "dist/LavApollo-${version}-Windows-portable.zip"
           cd dist
-          sha256sum "Apollo-${version}-Windows-installer.exe" "Apollo-${version}-Windows-portable.zip" > "Apollo-${version}-SHA256SUMS.txt"
+          sha256sum "LavApollo-${version}-Windows-installer.exe" "LavApollo-${version}-Windows-portable.zip" > "LavApollo-${version}-SHA256SUMS.txt"
 
       # Keeps the binaries available on the workflow run even if the
       # release publication fails
       - name: Upload workflow artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: Apollo-${{ steps.version.outputs.number }}-Windows
+          name: LavApollo-${{ steps.version.outputs.number }}-Windows
           path: dist/*
           if-no-files-found: error
 
@@ -132,7 +132,7 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ steps.version.outputs.tag }}
-          name: Apollo ${{ steps.version.outputs.tag }}
+          name: LavApollo ${{ steps.version.outputs.tag }}
           generate_release_notes: true
           prerelease: ${{ github.event_name == 'workflow_dispatch' && inputs.prerelease }}
           fail_on_unmatched_files: true
