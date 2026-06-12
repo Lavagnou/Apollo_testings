@@ -1,0 +1,139 @@
+name: Release
+
+# Builds the Windows installer + portable zip and publishes them as a GitHub release.
+#
+# Two ways to trigger:
+#  - Push a tag starting with "v" (ex: git tag v0.1.0 && git push origin v0.1.0)
+#  - Run the workflow manually from the Actions tab and provide a version;
+#    the tag is then created on the selected ref by the release step.
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Version to release (ex: v0.1.0)"
+        required: true
+        type: string
+      prerelease:
+        description: "Mark the release as a pre-release"
+        required: false
+        type: boolean
+        default: false
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: write
+
+jobs:
+  release-windows:
+    name: Build and publish Windows release
+    runs-on: windows-latest
+    timeout-minutes: 150
+
+    steps:
+      - name: Resolve version
+        id: version
+        shell: bash
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            version="${{ inputs.version }}"
+          else
+            version="${GITHUB_REF_NAME}"
+          fi
+          # Normalize: tag carries the "v" prefix, file names don't
+          case "$version" in
+            v*) ;;
+            *) version="v${version}" ;;
+          esac
+          echo "tag=${version}" >> "$GITHUB_OUTPUT"
+          echo "number=${version#v}" >> "$GITHUB_OUTPUT"
+
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      # Official MSVC-built Node.js. Do NOT use MSYS2's nodejs package:
+      # it crashes during process init (see docs/building.md).
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Setup MSYS2
+        uses: msys2/setup-msys2@v2
+        with:
+          msystem: ucrt64
+          update: true
+          # Inherit the Windows PATH so CMake's find_program() can locate
+          # the official Node.js installed above
+          path-type: inherit
+          install: >-
+            git
+            mingw-w64-ucrt-x86_64-boost
+            mingw-w64-ucrt-x86_64-cmake
+            mingw-w64-ucrt-x86_64-cppwinrt
+            mingw-w64-ucrt-x86_64-curl-winssl
+            mingw-w64-ucrt-x86_64-MinHook
+            mingw-w64-ucrt-x86_64-miniupnpc
+            mingw-w64-ucrt-x86_64-ninja
+            mingw-w64-ucrt-x86_64-nlohmann_json
+            mingw-w64-ucrt-x86_64-nsis
+            mingw-w64-ucrt-x86_64-onevpl
+            mingw-w64-ucrt-x86_64-openssl
+            mingw-w64-ucrt-x86_64-opus
+            mingw-w64-ucrt-x86_64-toolchain
+
+      - name: Configure
+        shell: msys2 {0}
+        env:
+          # Consumed by cmake/prep/build_version.cmake to stamp the build
+          BRANCH: ${{ github.ref_name }}
+          BUILD_VERSION: ${{ steps.version.outputs.tag }}
+          COMMIT: ${{ github.sha }}
+        run: cmake -B build -G Ninja -S .
+
+      - name: Build
+        shell: msys2 {0}
+        run: ninja -C build
+
+      - name: Package
+        shell: msys2 {0}
+        run: |
+          cpack -G NSIS --config ./build/CPackConfig.cmake
+          cpack -G ZIP --config ./build/CPackConfig.cmake
+
+      - name: Prepare release assets
+        shell: bash
+        run: |
+          version="${{ steps.version.outputs.number }}"
+          mkdir -p dist
+          cp build/cpack_artifacts/Apollo.exe "dist/Apollo-${version}-Windows-installer.exe"
+          cp build/cpack_artifacts/Apollo.zip "dist/Apollo-${version}-Windows-portable.zip"
+          cd dist
+          sha256sum "Apollo-${version}-Windows-installer.exe" "Apollo-${version}-Windows-portable.zip" > "Apollo-${version}-SHA256SUMS.txt"
+
+      # Keeps the binaries available on the workflow run even if the
+      # release publication fails
+      - name: Upload workflow artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: Apollo-${{ steps.version.outputs.number }}-Windows
+          path: dist/*
+          if-no-files-found: error
+
+      - name: Publish release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.version.outputs.tag }}
+          name: Apollo ${{ steps.version.outputs.tag }}
+          generate_release_notes: true
+          prerelease: ${{ github.event_name == 'workflow_dispatch' && inputs.prerelease }}
+          fail_on_unmatched_files: true
+          files: dist/*
